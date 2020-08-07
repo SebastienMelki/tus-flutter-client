@@ -214,6 +214,7 @@ class HandleFileUpload extends AsyncTask<Void, HashMap<String, String>, HashMap<
                     double progress = (double) bytesUploaded / totalBytes * 100;
 
                     System.out.printf("Upload at %06.2f%%.\n", progress);
+                    System.out.printf("Testing if this works\n", progress);
 
                     final HashMap<String, String> a = new HashMap<>();
                     a.put("endpointUrl", endpointUrl);
