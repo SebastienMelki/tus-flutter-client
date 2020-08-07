@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.AsyncTask;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -17,12 +18,25 @@ import java.util.HashMap;
 import java.util.concurrent.ExecutionException;
 
 import androidx.annotation.NonNull;
+
+import org.reactivestreams.Subscriber;
+import org.reactivestreams.Subscription;
+
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry.Registrar;
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.ObservableEmitter;
+import io.reactivex.rxjava3.core.ObservableOnSubscribe;
+import io.reactivex.rxjava3.core.Observer;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Action;
+import io.reactivex.rxjava3.internal.functions.Functions;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.tus.android.client.TusPreferencesURLStore;
 import io.tus.java.client.ProtocolException;
 import io.tus.java.client.TusClient;
@@ -69,7 +83,7 @@ public class TusPlugin implements FlutterPlugin, MethodCallHandler {
     }
 
     @Override
-    public void onMethodCall(@NonNull MethodCall call, @NonNull Result result) {
+    public void onMethodCall(@NonNull MethodCall call, @NonNull final Result result) {
         if (call.method.equals("getPlatformVersion")) {
             result.success("Android " + android.os.Build.VERSION.RELEASE);
         } else if (call.method.equals("initWithEndpoint")) {
@@ -130,23 +144,49 @@ public class TusPlugin implements FlutterPlugin, MethodCallHandler {
 
             System.out.println("Starting upload");
 
-            HandleFileUpload b = new HandleFileUpload(client, fileUploadUrl, methodChannel, endpointUrl, metadata);
-            try {
-                HashMap<String, String> c = b.execute().get();
-                if (c.containsKey("error")) {
-                    result.error("ErrorFromExecution", c.get("error"), c.get("reason"));
-                } else {
-                    result.success(c);
-                }
-            } catch (ExecutionException e) {
-                StringWriter errors = new StringWriter();
-                e.printStackTrace(new PrintWriter(errors));
-                result.error("ExecutionException", e.getMessage(), errors.toString());
-            } catch (InterruptedException e) {
-                StringWriter errors = new StringWriter();
-                e.printStackTrace(new PrintWriter(errors));
-                result.error("InterruptedException", e.getMessage(), errors.toString());
-            }
+            Observable<HashMap<String, String>> uploader = upload(client, fileUploadUrl, methodChannel, endpointUrl, metadata);
+
+            uploader.observeOn(AndroidSchedulers.mainThread())
+                    .subscribeOn(Schedulers.io())
+                    .subscribe(
+                            new Observer<HashMap<String, String>>() {
+
+                                @Override
+                                public void onSubscribe(@NonNull Disposable d) {
+
+                                }
+
+                                @Override
+                                public void onNext(@NonNull HashMap<String, String> c) {
+                                    Log.d("awslog", "onMethodCall onNext is called");
+//                                    try {
+                                        if (c.containsKey("error")) {
+                                            result.error("ErrorFromExecution", c.get("error"), c.get("reason"));
+                                        } else {
+                                            result.success(c);
+                                        }
+//                                    } catch (ExecutionException e) {
+//                                        StringWriter errors = new StringWriter();
+//                                        e.printStackTrace(new PrintWriter(errors));
+//                                        result.error("ExecutionException", e.getMessage(), errors.toString());
+//                                    } catch (InterruptedException e) {
+//                                        StringWriter errors = new StringWriter();
+//                                        e.printStackTrace(new PrintWriter(errors));
+//                                        result.error("InterruptedException", e.getMessage(), errors.toString());
+//                                    }
+                                }
+
+                                @Override
+                                public void onError(@NonNull Throwable e) {
+
+                                }
+
+                                @Override
+                                public void onComplete() {
+
+                                }
+                            }
+                    );
         } else {
             result.notImplemented();
         }
@@ -158,157 +198,157 @@ public class TusPlugin implements FlutterPlugin, MethodCallHandler {
             client.disableRemoveFingerprintOnSuccess();
         }
     }
-}
 
-class HandleFileUpload extends AsyncTask<Void, HashMap<String, String>, HashMap<String, String>> {
 
-    final TusClient client;
-    final String uploadFileUrl;
-    final MethodChannel methodChannel;
-    final String endpointUrl;
-    final HashMap<String, String> metadata;
+    private Observable<HashMap<String, String>> upload(final TusClient client,final String uploadFileUrl, final MethodChannel methodChannel, final String endpointUrl, final HashMap<String, String> metadata){
+        return Observable.create(new ObservableOnSubscribe<HashMap<String, String>>() {
 
-    HandleFileUpload(TusClient client, String uploadFileUrl, MethodChannel methodChannel, String endpointUrl, HashMap<String, String> metadata) {
-        this.client = client;
-        this.uploadFileUrl = uploadFileUrl;
-        this.methodChannel = methodChannel;
-        this.endpointUrl = endpointUrl;
-        this.metadata = metadata;
-    }
+           @Override
+            public void subscribe(ObservableEmitter<HashMap<String, String>> emitter) throws Exception {
+                System.out.println("awslog"+ "Uploader started");
 
-    @Override
-    protected HashMap<String, String> doInBackground(Void... voids) {
-
-        File file = new File(uploadFileUrl);
-        final TusUpload upload;
-        try {
-            upload = new TusUpload(file);
-            metadata.put("filename", file.getName());
-            upload.setMetadata(metadata);
-        } catch (FileNotFoundException e) {
-            StringWriter errors = new StringWriter();
-            e.printStackTrace(new PrintWriter(errors));
-            final HashMap<String, String> a = new HashMap<>();
-            a.put("error", e.getMessage());
-            a.put("reason", errors.toString());
-            return a;
-        }
-
-        // We wrap our uploading code in the TusExecutor class which will automatically catch
-        // exceptions and issue retries with small delays between them and take fully
-        // advantage of tus' resumability to offer more reliability.
-        // This step is optional but highly recommended.
-        TusExecutor tusExecutor = new TusExecutor() {
-            @Override
-            protected void makeAttempt() throws ProtocolException, IOException {
-                // First try to resume an upload. If that's not possible we will create a new
-                // upload and get a TusUploader in return. This class is responsible for opening
-                // a connection to the remote server and doing the uploading.
-                final TusUploader uploader = client.resumeOrCreateUpload(upload);
-
-                // Upload the file as long as data is available. Once the
-                // file has been fully uploaded the method will return -1
-                do {
-                    long totalBytes = upload.getSize();
-                    long bytesUploaded = uploader.getOffset();
-                    double progress = (double) bytesUploaded / totalBytes * 100;
-
-                    System.out.printf("Upload at %06.2f%%.\n", progress);
-                    // Getting thread's name
-                    System.out.println("Current Thread Name- " + Thread.currentThread().getName());
-                    // Getting thread's ID
-                    System.out.println("Current Thread ID- " + Thread.currentThread().getId() + " For Thread- " + Thread.currentThread().getName());
-
+                File file = new File(uploadFileUrl);
+                final TusUpload upload;
+                try {
+                    upload = new TusUpload(file);
+                    metadata.put("filename", file.getName());
+                    upload.setMetadata(metadata);
+                } catch (FileNotFoundException e) {
+                    StringWriter errors = new StringWriter();
+                    e.printStackTrace(new PrintWriter(errors));
                     final HashMap<String, String> a = new HashMap<>();
-                    a.put("endpointUrl", endpointUrl);
-                    a.put("bytesWritten", Long.toString(bytesUploaded));
-                    a.put("bytesTotal", Long.toString(totalBytes));
+                    a.put("error", e.getMessage());
+                    a.put("reason", errors.toString());
+                    System.out.println("awslog"+ "Uploader on error 1 a : " + a);
+                    emitter.onNext(a);
+                    emitter.onComplete();
+                    return;
+                }
+
+                // We wrap our uploading code in the TusExecutor class which will automatically catch
+                // exceptions and issue retries with small delays between them and take fully
+                // advantage of tus' resumability to offer more reliability.
+                // This step is optional but highly recommended.
+                TusExecutor tusExecutor = new TusExecutor() {
+                    @Override
+                    protected void makeAttempt() throws ProtocolException, IOException {
+                        // First try to resume an upload. If that's not possible we will create a new
+                        // upload and get a TusUploader in return. This class is responsible for opening
+                        // a connection to the remote server and doing the uploading.
+                        final TusUploader uploader = client.resumeOrCreateUpload(upload);
+
+                        // Upload the file as long as data is available. Once the
+                        // file has been fully uploaded the method will return -1
+                        do {
+                            final long totalBytes = upload.getSize();
+                            final long bytesUploaded = uploader.getOffset();
+                            double progress = (double) bytesUploaded / totalBytes * 100;
+
+                            System.out.printf("Upload at %06.2f%%.\n", progress);
+                            // Getting thread's name
+                            System.out.println("Current Thread Name- " + Thread.currentThread().getName());
+                            // Getting thread's ID
+                            System.out.println("Current Thread ID- " + Thread.currentThread().getId() + " For Thread- " + Thread.currentThread().getName());
+
+                            final HashMap<String, String> a = new HashMap<>();
+                            a.put("endpointUrl", endpointUrl);
+                            a.put("bytesWritten", Long.toString(bytesUploaded));
+                            a.put("bytesTotal", Long.toString(totalBytes));
+                            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    // Call the desired channel message here.
+                                    System.out.println("awslog"+ "Uploader onProgress: "+((bytesUploaded/totalBytes) * 100)+"%");
+                                    methodChannel.invokeMethod("progressBlock", a);
+                                }
+                            });
+
+                        } while (uploader.uploadChunk() > -1);
+
+                        uploader.finish();
+                        System.out.println("Completed upload");
+
+                        final HashMap<String, String> s = new HashMap<>();
+                        s.put("endpointUrl", endpointUrl);
+                        s.put("resultUrl", uploader.getUploadURL().toString());
+                        new Handler(Looper.getMainLooper()).post(new Runnable() {
+                            @Override
+                            public void run() {
+                                // Call the desired channel message here.
+                                System.out.println("awslog resultBlock called");
+                                methodChannel.invokeMethod("resultBlock", s);
+                            }
+                        });
+                    }
+                };
+
+                try {
+                    tusExecutor.makeAttempts();
+                    HashMap<String, String> a = new HashMap<>();
+                    a.put("inProgress", "true");
+                    System.out.println("awslog"+ "Uploader inProgress ");
+                    emitter.onNext(a);
+                } catch (ProtocolException e) {
+                    System.out.println(e.getMessage());
+                    final HashMap<String, String> errorMap = new HashMap<>();
+                    errorMap.put("endpointUrl", endpointUrl);
+                    errorMap.put("error", e.getMessage());
+                    StringWriter errors = new StringWriter();
+                    e.printStackTrace(new PrintWriter(errors));
+                    errorMap.put("reason", errors.toString());
+
                     new Handler(Looper.getMainLooper()).post(new Runnable() {
                         @Override
                         public void run() {
                             // Call the desired channel message here.
-                            methodChannel.invokeMethod("progressBlock", a);
+                            methodChannel.invokeMethod("failureBlock", errorMap);
+                        }
+                    });
+                    System.out.println("awslog"+ "Uploader on error 2 errorMap : " + errorMap);
+                    emitter.onNext(errorMap);
+                } catch (IOException e) {
+                    final HashMap<String, String> errorMap = new HashMap<>();
+                    errorMap.put("endpointUrl", endpointUrl);
+                    errorMap.put("error", e.getMessage());
+
+                    StringWriter errors = new StringWriter();
+                    e.printStackTrace(new PrintWriter(errors));
+                    errorMap.put("reason", errors.toString());
+
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            // Call the desired channel message here.
+                            methodChannel.invokeMethod("failureBlock", errorMap);
                         }
                     });
 
-                } while (uploader.uploadChunk() > -1);
+                    System.out.println("awslog"+ "Uploader on error 3 errorMap : " + errorMap);
+                    emitter.onNext(errorMap);
 
-                uploader.finish();
-                System.out.println("Completed upload");
+                } catch (Exception e) {
+                    final HashMap<String, String> errorMap = new HashMap<>();
+                    errorMap.put("endpointUrl", endpointUrl);
+                    errorMap.put("error", e.getMessage());
 
-                final HashMap<String, String> s = new HashMap<>();
-                s.put("endpointUrl", endpointUrl);
-                s.put("resultUrl", uploader.getUploadURL().toString());
-                new Handler(Looper.getMainLooper()).post(new Runnable() {
-                    @Override
-                    public void run() {
-                        // Call the desired channel message here.
-                        methodChannel.invokeMethod("resultBlock", s);
-                    }
-                });
-            }
-        };
+                    StringWriter errors = new StringWriter();
+                    e.printStackTrace(new PrintWriter(errors));
+                    errorMap.put("reason", errors.toString());
 
-        try {
-            tusExecutor.makeAttempts();
-            HashMap<String, String> a = new HashMap<>();
-            a.put("inProgress", "true");
-            return a;
-        } catch (ProtocolException e) {
-            System.out.println(e.getMessage());
-            final HashMap<String, String> errorMap = new HashMap<>();
-            errorMap.put("endpointUrl", endpointUrl);
-            errorMap.put("error", e.getMessage());
-            StringWriter errors = new StringWriter();
-            e.printStackTrace(new PrintWriter(errors));
-            errorMap.put("reason", errors.toString());
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            // Call the desired channel message here.
+                            methodChannel.invokeMethod("failureBlock", errorMap);
+                        }
+                    });
 
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    // Call the desired channel message here.
-                    methodChannel.invokeMethod("failureBlock", errorMap);
+                    System.out.println("awslog"+ "Uploader on error 4 errorMap : " + errorMap);
+                    emitter.onNext(errorMap);
                 }
-            });
+                emitter.onComplete();
+           }
 
-            return errorMap;
-        } catch (IOException e) {
-            final HashMap<String, String> errorMap = new HashMap<>();
-            errorMap.put("endpointUrl", endpointUrl);
-            errorMap.put("error", e.getMessage());
-
-            StringWriter errors = new StringWriter();
-            e.printStackTrace(new PrintWriter(errors));
-            errorMap.put("reason", errors.toString());
-
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    // Call the desired channel message here.
-                    methodChannel.invokeMethod("failureBlock", errorMap);
-                }
-            });
-
-            return errorMap;
-
-        } catch (Exception e) {
-            final HashMap<String, String> errorMap = new HashMap<>();
-            errorMap.put("endpointUrl", endpointUrl);
-            errorMap.put("error", e.getMessage());
-
-            StringWriter errors = new StringWriter();
-            e.printStackTrace(new PrintWriter(errors));
-            errorMap.put("reason", errors.toString());
-
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    // Call the desired channel message here.
-                    methodChannel.invokeMethod("failureBlock", errorMap);
-                }
-            });
-            return errorMap;
-        }
-
+        });
     }
 }

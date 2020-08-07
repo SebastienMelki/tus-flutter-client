@@ -62,12 +62,17 @@ class Tus {
 
     // Trigger the onProgress callback if the callback is provided.
     if (call.method == "progressBlock") {
-      var bytesWritten = call.arguments["bytesWritten"];
-      var bytesTotal = call.arguments["bytesTotal"];
+      var bytesWritten = double.parse(call.arguments["bytesWritten"]);
+      var bytesTotal = double.parse(call.arguments["bytesTotal"]);
+
       if (onProgress != null) {
-        double progress = bytesWritten / bytesTotal;
-        onProgress(int.tryParse(bytesWritten), int.tryParse(bytesTotal),
-            progress, this);
+        try {
+          double progress = bytesWritten / bytesTotal;
+          onProgress(bytesWritten.toInt(), bytesTotal.toInt(), progress, this);
+        } catch (e) {
+          print("ERROR ON PROGRESS CALLBACK");
+          print(e);
+        }
       }
     }
 
@@ -111,7 +116,7 @@ class Tus {
   // Note that filename is provided in the [metadata] upon upload.
   Future<dynamic> createUploadFromFile(String fileToUpload,
       {Map<String, String> metadata}) async {
-    if(!isInitialized) {
+    if (!isInitialized) {
       await initializeWithEndpoint();
     }
 
