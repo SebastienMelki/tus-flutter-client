@@ -214,7 +214,10 @@ class HandleFileUpload extends AsyncTask<Void, HashMap<String, String>, HashMap<
                     double progress = (double) bytesUploaded / totalBytes * 100;
 
                     System.out.printf("Upload at %06.2f%%.\n", progress);
-                    System.out.printf("Testing if this works\n", progress);
+                    // Getting thread's name
+                    System.out.println("Current Thread Name- " + Thread.currentThread().getName());
+                    // Getting thread's ID
+                    System.out.println("Current Thread ID- " + Thread.currentThread().getId() + " For Thread- " + Thread.currentThread().getName());
 
                     final HashMap<String, String> a = new HashMap<>();
                     a.put("endpointUrl", endpointUrl);
